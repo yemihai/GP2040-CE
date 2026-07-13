@@ -296,9 +296,9 @@ void Gamepad::process()
 
 	// ===== 自定义对角线方向SOCD处理 =====
 	// L3(LS)映射为左下(DOWN+LEFT)，R3(RS)映射为右下(DOWN+RIGHT)
-	// 与LEFT/RIGHT完全互斥，采用后覆盖模式
+	// 与LEFT/RIGHT完全互斥，采用后覆盖模式（松开自动回退）
 	{
-		// 状态跟踪（静态变量保持历史）
+		// 上一帧状态
 		static bool prevL3 = false, prevR3 = false;
 		static bool prevLeft = false, prevRight = false;
 		static bool prevUp = false, prevDown = false;
@@ -311,26 +311,59 @@ void Gamepad::process()
 		bool currUp = (state.dpad & GAMEPAD_MASK_UP) != 0;
 		bool currDown = (state.dpad & GAMEPAD_MASK_DOWN) != 0;
 
-		// 水平主输入：0=无, 1=LEFT, 2=RIGHT, 3=L3(左下), 4=R3(右下) - 后覆盖
-		static int lastHoriz = 0;
-		// 垂直方向：0=无, 1=UP, 2=DOWN - 后覆盖
-		static int lastVert = 0;
+		// ===== 水平方向优先级（值越大越优先 = 后按下的优先） =====
+		// 索引：1=LEFT, 2=RIGHT, 3=L3(左下), 4=R3(右下)
+		static int horizPriority[5] = {0};
+		static int horizCounter = 0;
 
-		// 更新水平最后输入（后按下的优先）
-		if (currLeft && !prevLeft) lastHoriz = 1;
-		if (currRight && !prevRight) lastHoriz = 2;
-		if (currL3 && !prevL3) lastHoriz = 3;
-		if (currR3 && !prevR3) lastHoriz = 4;
+		// 按下时赋予最高优先级
+		if (currLeft && !prevLeft)  horizPriority[1] = ++horizCounter;
+		if (currRight && !prevRight) horizPriority[2] = ++horizCounter;
+		if (currL3 && !prevL3)      horizPriority[3] = ++horizCounter;
+		if (currR3 && !prevR3)      horizPriority[4] = ++horizCounter;
 
-		// 更新垂直最后输入
-		if (currUp && !prevUp) lastVert = 1;
-		if (currDown && !prevDown) lastVert = 2;
-		if (currL3 && !prevL3) lastVert = 2;  // L3带有DOWN分量
-		if (currR3 && !prevR3) lastVert = 2;  // R3带有DOWN分量
+		// 松开时清零优先级（自动回退到上一个还按着的键）
+		if (!currLeft && prevLeft)  horizPriority[1] = 0;
+		if (!currRight && prevRight) horizPriority[2] = 0;
+		if (!currL3 && prevL3)      horizPriority[3] = 0;
+		if (!currR3 && prevR3)      horizPriority[4] = 0;
 
-		// 全部松开时重置
-		if (!currL3 && !currR3 && !currLeft && !currRight) lastHoriz = 0;
-		if (!currL3 && !currR3 && !currUp && !currDown) lastVert = 0;
+		// 找出当前优先级最高的水平输入
+		int lastHoriz = 0;
+		int maxHP = 0;
+		for (int i = 1; i <= 4; i++) {
+			if (horizPriority[i] > maxHP) {
+				maxHP = horizPriority[i];
+				lastHoriz = i;
+			}
+		}
+
+		// ===== 垂直方向优先级（值越大越优先 = 后按下的优先） =====
+		// 索引：1=UP, 2=DOWN键, 3=L3带DOWN, 4=R3带DOWN
+		static int vertPriority[5] = {0};
+		static int vertCounter = 0;
+
+		// 按下时赋予最高优先级
+		if (currUp && !prevUp)      vertPriority[1] = ++vertCounter;
+		if (currDown && !prevDown)  vertPriority[2] = ++vertCounter;
+		if (currL3 && !prevL3)      vertPriority[3] = ++vertCounter;  // L3带有DOWN
+		if (currR3 && !prevR3)      vertPriority[4] = ++vertCounter;  // R3带有DOWN
+
+		// 松开时清零优先级
+		if (!currUp && prevUp)      vertPriority[1] = 0;
+		if (!currDown && prevDown)  vertPriority[2] = 0;
+		if (!currL3 && prevL3)      vertPriority[3] = 0;
+		if (!currR3 && prevR3)      vertPriority[4] = 0;
+
+		// 找出当前优先级最高的垂直输入
+		int lastVert = 0;
+		int maxVP = 0;
+		for (int i = 1; i <= 4; i++) {
+			if (vertPriority[i] > maxVP) {
+				maxVP = vertPriority[i];
+				lastVert = i;
+			}
+		}
 
 		// 保存状态用于下次比较
 		prevL3 = currL3;
@@ -340,41 +373,27 @@ void Gamepad::process()
 		prevUp = currUp;
 		prevDown = currDown;
 
-		// 计算最终dpad
+		// ===== 计算最终dpad =====
 		uint8_t finalDpad = 0;
 
 		// 水平分量
 		switch (lastHoriz) {
 			case 1:  // LEFT
-			case 3:  // L3（带LEFT）
+			case 3:  // L3（带LEFT分量）
 				finalDpad |= GAMEPAD_MASK_LEFT;
 				break;
 			case 2:  // RIGHT
-			case 4:  // R3（带RIGHT）
+			case 4:  // R3（带RIGHT分量）
 				finalDpad |= GAMEPAD_MASK_RIGHT;
 				break;
 		}
 
-		// 垂直分量处理
-		bool wantUp = currUp;
-		bool wantDown = currDown;
-
-		// 对角线按键带来的DOWN分量
-		if (lastHoriz == 3 || lastHoriz == 4) {
-			wantDown = true;
+		// 垂直分量：优先级最高的生效
+		if (lastVert == 1) {
+			finalDpad |= GAMEPAD_MASK_UP;     // UP优先
+		} else if (lastVert == 2 || lastVert == 3 || lastVert == 4) {
+			finalDpad |= GAMEPAD_MASK_DOWN;   // DOWN优先（包括L3/R3自带的DOWN）
 		}
-
-		// UP和DOWN冲突时，最后按下的优先
-		if (wantUp && wantDown) {
-			if (lastVert == 1) {
-				wantDown = false;  // UP后按下，UP赢
-			} else {
-				wantUp = false;    // DOWN后按下，DOWN赢
-			}
-		}
-
-		if (wantUp) finalDpad |= GAMEPAD_MASK_UP;
-		if (wantDown) finalDpad |= GAMEPAD_MASK_DOWN;
 
 		state.dpad = finalDpad;
 
