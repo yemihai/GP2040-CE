@@ -356,9 +356,13 @@ void Gamepad::process()
 		if (!currR3 && prevR3)      vertPriority[4] = 0;
 
 		// 找出当前优先级最高的垂直输入
+		// 注意：L3/R3自带的DOWN分量，只有当L3/R3是当前生效的水平输入时才算数
+		// 如果水平被其他键覆盖了，L3/R3的DOWN也要一起消失
 		int lastVert = 0;
 		int maxVP = 0;
 		for (int i = 1; i <= 4; i++) {
+			if (i == 3 && lastHoriz != 3) continue;  // L3的DOWN只在L3生效时算
+			if (i == 4 && lastHoriz != 4) continue;  // R3的DOWN只在R3生效时算
 			if (vertPriority[i] > maxVP) {
 				maxVP = vertPriority[i];
 				lastVert = i;
