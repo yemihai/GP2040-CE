@@ -294,7 +294,97 @@ void Gamepad::process()
 		state.dpad |= dpadOnlyMask;
 	}
 
+	// ===== 自定义对角线方向SOCD处理 =====
+	// L3(LS)映射为左下(DOWN+LEFT)，R3(RS)映射为右下(DOWN+RIGHT)
+	// 与LEFT/RIGHT完全互斥，采用后覆盖模式
+	{
+		// 状态跟踪（静态变量保持历史）
+		static bool prevL3 = false, prevR3 = false;
+		static bool prevLeft = false, prevRight = false;
+		static bool prevUp = false, prevDown = false;
+
+		// 当前按键状态
+		bool currL3 = (state.buttons & GAMEPAD_MASK_L3) != 0;
+		bool currR3 = (state.buttons & GAMEPAD_MASK_R3) != 0;
+		bool currLeft = (state.dpad & GAMEPAD_MASK_LEFT) != 0;
+		bool currRight = (state.dpad & GAMEPAD_MASK_RIGHT) != 0;
+		bool currUp = (state.dpad & GAMEPAD_MASK_UP) != 0;
+		bool currDown = (state.dpad & GAMEPAD_MASK_DOWN) != 0;
+
+		// 水平主输入：0=无, 1=LEFT, 2=RIGHT, 3=L3(左下), 4=R3(右下) - 后覆盖
+		static int lastHoriz = 0;
+		// 垂直方向：0=无, 1=UP, 2=DOWN - 后覆盖
+		static int lastVert = 0;
+
+		// 更新水平最后输入（后按下的优先）
+		if (currLeft && !prevLeft) lastHoriz = 1;
+		if (currRight && !prevRight) lastHoriz = 2;
+		if (currL3 && !prevL3) lastHoriz = 3;
+		if (currR3 && !prevR3) lastHoriz = 4;
+
+		// 更新垂直最后输入
+		if (currUp && !prevUp) lastVert = 1;
+		if (currDown && !prevDown) lastVert = 2;
+		if (currL3 && !prevL3) lastVert = 2;  // L3带有DOWN分量
+		if (currR3 && !prevR3) lastVert = 2;  // R3带有DOWN分量
+
+		// 全部松开时重置
+		if (!currL3 && !currR3 && !currLeft && !currRight) lastHoriz = 0;
+		if (!currL3 && !currR3 && !currUp && !currDown) lastVert = 0;
+
+		// 保存状态用于下次比较
+		prevL3 = currL3;
+		prevR3 = currR3;
+		prevLeft = currLeft;
+		prevRight = currRight;
+		prevUp = currUp;
+		prevDown = currDown;
+
+		// 计算最终dpad
+		uint8_t finalDpad = 0;
+
+		// 水平分量
+		switch (lastHoriz) {
+			case 1:  // LEFT
+			case 3:  // L3（带LEFT）
+				finalDpad |= GAMEPAD_MASK_LEFT;
+				break;
+			case 2:  // RIGHT
+			case 4:  // R3（带RIGHT）
+				finalDpad |= GAMEPAD_MASK_RIGHT;
+				break;
+		}
+
+		// 垂直分量处理
+		bool wantUp = currUp;
+		bool wantDown = currDown;
+
+		// 对角线按键带来的DOWN分量
+		if (lastHoriz == 3 || lastHoriz == 4) {
+			wantDown = true;
+		}
+
+		// UP和DOWN冲突时，最后按下的优先
+		if (wantUp && wantDown) {
+			if (lastVert == 1) {
+				wantDown = false;  // UP后按下，UP赢
+			} else {
+				wantUp = false;    // DOWN后按下，DOWN赢
+			}
+		}
+
+		if (wantUp) finalDpad |= GAMEPAD_MASK_UP;
+		if (wantDown) finalDpad |= GAMEPAD_MASK_DOWN;
+
+		state.dpad = finalDpad;
+
+		// 清除L3和R3按钮状态，它们已经转换为方向输入
+		state.buttons &= ~(GAMEPAD_MASK_L3 | GAMEPAD_MASK_R3);
+	}
+	// ===== 自定义SOCD处理结束 =====
+
 	// clean up after yourself. nobody likes bad inputs.
+	// 注：自定义逻辑已处理SOCD，这里再跑一次作为安全冗余
 	state.dpad = runSOCDCleaner(resolveSOCDMode(options), state.dpad);
 
 	// since analog modes only care about the dpad mode inputs, set the dpad state to digital only dpad values
